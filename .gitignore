@@ -1,0 +1,16 @@
+# IDE Things
+.idea
+.vscode
+.ignore
+
+# macOS Things
+.DS_Store
+
+# PM2 Things
+.pm2.json
+
+# Rust Things
+**/*.rs.bk
+**/target/
+Cargo.toml.bak
+expand.rs
