@@ -23,39 +23,53 @@ use std::{
 	time::Duration,
 };
 // --- crates ---
+use clap::{app_from_crate, Arg};
 use sysinfo::{ProcessExt, System, SystemExt};
 
 type PID = i32;
 
 fn main() {
-	pretty_env_logger::init_custom_env("SYNC_LOG");
+	let matches = app_from_crate!()
+		.arg(Arg::new("log").short('l').long("log").about("Syncing Log"))
+		.arg(
+			Arg::new("script")
+				.short('s')
+				.long("script")
+				.value_name("PATH")
+				.about("Darwinia Boot Script")
+				.takes_value(true),
+		)
+		.get_matches();
 
-	let running = Arc::new(AtomicBool::new(true));
-	{
-		let r = running.clone();
-		ctrlc::set_handler(move || {
-			r.store(false, Ordering::SeqCst);
-		})
-		.unwrap();
+	if matches.is_present("log") {
+		env::set_var("SYNC_LOG", "trace");
+		pretty_env_logger::init_custom_env("SYNC_LOG");
 	}
-	while running.load(Ordering::SeqCst) {
-		let pid = run();
-		kill(pid);
+
+	if let Some(script_path) = matches.value_of("script") {
+		let running = Arc::new(AtomicBool::new(true));
+		{
+			let r = running.clone();
+			ctrlc::set_handler(move || {
+				r.store(false, Ordering::SeqCst);
+			})
+			.unwrap();
+		}
+
+		while running.load(Ordering::SeqCst) {
+			let pid = run(script_path);
+			kill(pid);
+		}
 	}
 }
 
-fn run() -> PID {
+fn run(script_path: &str) -> PID {
 	let (tx, rx) = mpsc::channel();
-	let mut darwinia = Command::new(
-		env::args()
-			.skip(1)
-			.next()
-			.expect("usage: darwinia-sync ./your_boot_script"),
-	)
-	.stdout(Stdio::null())
-	.stderr(Stdio::piped())
-	.spawn()
-	.unwrap();
+	let mut darwinia = Command::new(script_path)
+		.stdout(Stdio::null())
+		.stderr(Stdio::piped())
+		.spawn()
+		.unwrap();
 	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
 	let darwinia_thread = thread::spawn(move || {
 		let (mut best_number, mut idel_times) = (0, 0);
@@ -106,7 +120,7 @@ fn sync_stalled(log: &str, previous_best_number: &mut u32, idel_times: &mut u8) 
 
 fn kill(darwinia_pid: PID) {
 	let sys = System::new_all();
-	for offset in 0..=2 {
+	for offset in -2..=2 {
 		let darwinia_pid = darwinia_pid + offset;
 		if let Some(process) = sys.get_process(darwinia_pid) {
 			if process.name().contains("darwinia") {
