@@ -1,11 +1,14 @@
-mod pattern {
+mod global {
 	#![allow(non_upper_case_globals)]
 
 	// --- crates ---
 	use lazy_static::lazy_static;
 	use regex::Regex;
+	// --- custom ---
+	use crate::*;
 
 	lazy_static! {
+		pub static ref darwinia_sync_pid: PID = process::id() as _;
 		pub static ref best_number: Regex = Regex::new(r".+?best.+?#(\d+)").unwrap();
 	}
 }
@@ -14,7 +17,7 @@ mod pattern {
 use std::{
 	env,
 	io::{BufRead, BufReader},
-	process::{Command, Stdio},
+	process::{self, Command, Stdio},
 	sync::{
 		atomic::{AtomicBool, Ordering},
 		mpsc, Arc,
@@ -24,7 +27,6 @@ use std::{
 };
 // --- crates ---
 use clap::{app_from_crate, Arg};
-use sysinfo::{ProcessExt, System, SystemExt};
 
 type PID = i32;
 
@@ -57,13 +59,14 @@ fn main() {
 		}
 
 		while running.load(Ordering::SeqCst) {
-			let pid = run(script_path);
-			kill(pid);
+			run(script_path);
 		}
+
+		kill(*global::darwinia_sync_pid);
 	}
 }
 
-fn run(script_path: &str) -> PID {
+fn run(script_path: &str) {
 	let (tx, rx) = mpsc::channel();
 	let mut darwinia = Command::new(script_path)
 		.stdout(Stdio::null())
@@ -71,12 +74,28 @@ fn run(script_path: &str) -> PID {
 		.spawn()
 		.unwrap();
 	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
+	let darwinia_pid = darwinia.id() as PID;
 	let darwinia_thread = thread::spawn(move || {
-		let (mut best_number, mut idel_times) = (0, 0);
+		let (mut best_number, mut idle_times) = (0, 0);
 		for log in stderr.lines() {
 			let log = &log.unwrap();
-			sync_stalled(log, &mut best_number, &mut idel_times);
-			if idel_times > 3 {
+
+			sync_stalled(
+				log,
+				&mut best_number,
+				&mut idle_times,
+				|best_number, idle_times| {
+					log::trace!("Best Number: {}, Idle Times: {}", best_number, idle_times);
+					log::trace!(
+						"Darwinia-Sync PID: {}, Subprocess PID: {}, Script PID: {}",
+						*global::darwinia_sync_pid,
+						darwinia_pid,
+						darwinia_pid + 1,
+					);
+				},
+			);
+
+			if idle_times > 3 {
 				tx.send(255u8).unwrap();
 				break;
 			} else {
@@ -90,7 +109,8 @@ fn run(script_path: &str) -> PID {
 			255 => {
 				darwinia_thread.join().unwrap();
 				darwinia.kill().unwrap();
-				kill(darwinia.id() as _);
+				kill(darwinia_pid);
+				kill(darwinia_pid + 1);
 				thread::sleep(Duration::from_secs(3));
 
 				break;
@@ -98,37 +118,30 @@ fn run(script_path: &str) -> PID {
 			_ => (),
 		}
 	}
-
-	darwinia.id() as _
 }
 
-fn sync_stalled(log: &str, previous_best_number: &mut u32, idel_times: &mut u8) {
-	if let Some(captures) = pattern::best_number.captures(log) {
+fn sync_stalled<F>(log: &str, previous_best_number: &mut u32, idle_times: &mut u8, logger: F)
+where
+	F: FnOnce(u32, u8),
+{
+	if let Some(captures) = global::best_number.captures(log) {
 		if let Some(best_number) = captures.get(1) {
 			let best_number = best_number.as_str().parse().unwrap();
 			if *previous_best_number == best_number {
-				*idel_times += 1;
+				*idle_times += 1;
 			} else {
 				*previous_best_number = best_number;
-				*idel_times = 0;
+				*idle_times = 0;
 			}
-
-			log::trace!("Best Number: {}, Idle Times: {}", best_number, idel_times);
 		}
+
+		logger(*previous_best_number, *idle_times);
 	}
 }
 
-fn kill(darwinia_pid: PID) {
-	let sys = System::new_all();
-	for offset in -2..=2 {
-		let darwinia_pid = darwinia_pid + offset;
-		if let Some(process) = sys.get_process(darwinia_pid) {
-			if process.name().contains("darwinia") {
-				Command::new("kill")
-					.args(&["-9", &darwinia_pid.to_string()])
-					.output()
-					.unwrap();
-			}
-		}
-	}
+fn kill(pid: PID) {
+	Command::new("kill")
+		.args(&["-9", &pid.to_string()])
+		.output()
+		.unwrap();
 }

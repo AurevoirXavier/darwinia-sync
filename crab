@@ -1,7 +1,0 @@
-#! /bin/sh
-
-/Users/xavier/Downloads/darwinia-catalina \
-	-d /Users/xavier/Downloads/data \
-	--bootnodes /ip4/49.234.225.216/tcp/30333/p2p/QmWWc1R6tifz2ej7BrTJ8o5qs4SXt7dRqfP5GNCUHAQwoK \
-	--pruning archive \
-	--name XavierFull
