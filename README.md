@@ -2,9 +2,16 @@
 
 ### Setup
 
-```sh
-cargo install darwinia-sync
-```
+1.
+	```sh
+	cargo install darwinia-sync
+	```
+2.	```sh
+	git clone https://github.com/AurevoirXavier/darwinia-sync.git
+	cd darwinia-sync
+	cargo build --release
+	cp target/release/darwinia-sync ~/.local/bin # or somewhere in your $PATH
+	```
 
 ### Usage
 
