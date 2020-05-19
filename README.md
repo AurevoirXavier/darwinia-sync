@@ -2,11 +2,12 @@
 
 ### Setup
 
-1.
+1. **Use crates.io**
 	```sh
 	cargo install darwinia-sync
 	```
-2.	```sh
+2. **Compile from source**
+	```sh
 	git clone https://github.com/AurevoirXavier/darwinia-sync.git
 	cd darwinia-sync
 	cargo build --release
