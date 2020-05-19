@@ -8,7 +8,7 @@ mod global {
 	use crate::*;
 
 	lazy_static! {
-		pub static ref darwinia_sync_pid: PID = process::id() as _;
+		pub static ref darwinia_sync_pid: pid_t = process::id() as _;
 		pub static ref best_number_regex: Regex = Regex::new(r".+?best.+?#(\d+)").unwrap();
 	}
 }
@@ -28,18 +28,18 @@ use std::{
 };
 // --- crates ---
 use clap::{app_from_crate, Arg};
+use libc::pid_t;
 #[cfg(target_os = "linux")]
 use procfs::process::Process;
 
-type PID = i32;
-
 #[cfg(target_os = "macos")]
-const PID_OFFSET: PID = 1;
+const PID_OFFSET: pid_t = 1;
 #[cfg(target_os = "linux")]
-const PID_OFFSET: PID = 2;
+const PID_OFFSET: pid_t = 2;
 
 const INIT: u8 = 0;
-const EXITED: u8 = 255;
+const DB_LOCKED: u8 = 254;
+const IDLED: u8 = 255;
 
 fn main() {
 	let matches = app_from_crate!()
@@ -75,11 +75,10 @@ fn main() {
 
 			// TODO
 			match status.replace(INIT) {
-				EXITED => (),
+				IDLED => (),
+				DB_LOCKED => thread::sleep(Duration::from_secs(3)),
 				_ => (),
 			}
-
-			thread::sleep(Duration::from_secs(3));
 		}
 
 		kill(*global::darwinia_sync_pid);
@@ -94,7 +93,7 @@ fn run(script_path: &str, status: RefCell<u8>) {
 		.spawn()
 		.unwrap();
 	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
-	let darwinia_pid = darwinia.id() as PID;
+	let darwinia_pid = darwinia.id() as pid_t;
 	let darwinia_thread = thread::spawn(move || {
 		let (mut best_number, mut idle_times) = (0, 0);
 		for log in stderr.lines() {
@@ -107,25 +106,11 @@ fn run(script_path: &str, status: RefCell<u8>) {
 				|best_number, idle_times| {
 					#[cfg(target_os = "linux")]
 					if let Ok(darwinia_sync_process) = Process::myself() {
-						log::trace!(
-							"Darwinia-Sync utime: {}, stime: {}, cutime: {}, cstime: {}, vsize: {}",
-							darwinia_sync_process.stat.utime,
-							darwinia_sync_process.stat.stime,
-							darwinia_sync_process.stat.cutime,
-							darwinia_sync_process.stat.cstime,
-							darwinia_sync_process.stat.vsize,
-						);
+						log::trace!("Darwinia-Sync vsize: {}", darwinia_sync_process.stat.vsize,);
 					}
 					#[cfg(target_os = "linux")]
 					if let Ok(darwinia_process) = Process::new(darwinia_pid) {
-						log::trace!(
-							"Darwinia utime: {}, stime: {}, cutime: {}, cstime: {}, vsize: {}",
-							darwinia_process.stat.utime,
-							darwinia_process.stat.stime,
-							darwinia_process.stat.cutime,
-							darwinia_process.stat.cstime,
-							darwinia_process.stat.vsize,
-						);
+						log::trace!("Darwinia vsize: {}", darwinia_process.stat.vsize,);
 					}
 
 					log::trace!(
@@ -139,8 +124,10 @@ fn run(script_path: &str, status: RefCell<u8>) {
 			);
 
 			if idle_times > 3 {
-				tx.send(255u8).unwrap();
+				tx.send(IDLED).unwrap();
 				break;
+			} else if db_locked(log) {
+				tx.send(DB_LOCKED).unwrap();
 			} else {
 				println!("{}", log);
 			}
@@ -150,7 +137,7 @@ fn run(script_path: &str, status: RefCell<u8>) {
 	while let Ok(received) = rx.recv() {
 		*status.borrow_mut() = received;
 		match received {
-			EXITED => {
+			DB_LOCKED | IDLED => {
 				darwinia_thread.join().unwrap();
 				darwinia.kill().unwrap();
 				kill(darwinia_pid);
@@ -161,6 +148,10 @@ fn run(script_path: &str, status: RefCell<u8>) {
 			_ => (),
 		}
 	}
+}
+
+fn db_locked(log: &str) -> bool {
+	log.contains("db/LOCK")
 }
 
 fn sync_stalled<F>(log: &str, previous_best_number: &mut u32, idle_times: &mut u8, logger: F)
@@ -182,9 +173,8 @@ where
 	}
 }
 
-fn kill(pid: PID) {
-	Command::new("kill")
-		.args(&["-9", &pid.to_string()])
-		.output()
-		.unwrap();
+fn kill(pid: pid_t) {
+	unsafe {
+		libc::kill(pid, 9);
+	}
 }

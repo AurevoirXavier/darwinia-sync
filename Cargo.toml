@@ -1,6 +1,6 @@
 [package]
 name = "darwinia-sync"
-version = "0.6.0"
+version = "0.7.0"
 authors = ["Xavier Lau <c.estlavie@icloud>"]
 description = "Darwinia Maintain Tool"
 edition = "2018"
@@ -12,6 +12,7 @@ repository = "https://github.com/AurevoirXavier/darwinia-sync/"
 clap = { version = "3.0.0-beta.1" }
 ctrlc = { version = "3.1.4", features = ["termination"] }
 lazy_static = { version = "1.4.0" }
+libc = { version = "0.2.70" }
 log = { version = "0.4.8" }
 pretty_env_logger = { version = "0.4.0" }
 regex = { version = "1.3.7" }

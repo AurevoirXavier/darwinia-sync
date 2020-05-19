@@ -120,11 +120,12 @@ dependencies = [
 
 [[package]]
 name = "darwinia-sync"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "clap",
  "ctrlc",
  "lazy_static",
+ "libc",
  "log",
  "pretty_env_logger",
  "procfs",
