@@ -149,7 +149,10 @@ fn run(script_path: &str, status: RefCell<u8>) {
 				darwinia_thread.join().unwrap();
 				darwinia.kill().unwrap();
 				kill(darwinia_pid);
+				#[cfg(target_os = "macos")]
 				kill(darwinia_pid + 1);
+				#[cfg(target_os = "linux")]
+				kill(darwinia_pid + 2);
 
 				break;
 			}
