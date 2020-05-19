@@ -1,6 +1,6 @@
 [package]
 name = "darwinia-sync"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Xavier Lau <c.estlavie@icloud>"]
 description = "Darwinia Maintain Tool"
 edition = "2018"

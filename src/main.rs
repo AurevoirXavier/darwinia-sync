@@ -33,6 +33,11 @@ use procfs::process::Process;
 
 type PID = i32;
 
+#[cfg(target_os = "macos")]
+const PID_OFFSET: PID = 1;
+#[cfg(target_os = "linux")]
+const PID_OFFSET: PID = 2;
+
 const INIT: u8 = 0;
 const EXITED: u8 = 255;
 
@@ -127,7 +132,7 @@ fn run(script_path: &str, status: RefCell<u8>) {
 						"Darwinia-Sync PID: {}, Darwinia-Sync TID: {}, Darwinia PID: {}",
 						*global::darwinia_sync_pid,
 						darwinia_pid,
-						darwinia_pid + 1,
+						darwinia_pid + PID_OFFSET,
 					);
 					log::trace!("Best Number: {}, Idle Times: {}", best_number, idle_times);
 				},
@@ -149,10 +154,7 @@ fn run(script_path: &str, status: RefCell<u8>) {
 				darwinia_thread.join().unwrap();
 				darwinia.kill().unwrap();
 				kill(darwinia_pid);
-				#[cfg(target_os = "macos")]
-				kill(darwinia_pid + 1);
-				#[cfg(target_os = "linux")]
-				kill(darwinia_pid + 2);
+				kill(darwinia_pid + PID_OFFSET);
 
 				break;
 			}
