@@ -183,7 +183,6 @@ fn kill_darwinia(darwinia_pid: pid_t) {
 
 fn kill(pid: pid_t) {
 	unsafe {
-		libc::killpg(pid, 9);
 		libc::kill(pid, 9);
 	}
 }
