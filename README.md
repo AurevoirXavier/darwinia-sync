@@ -34,7 +34,7 @@ systemctl start crab.service
 	--unsafe-rpc-external \
 	--unsafe-ws-external \
 	--validator \
-	--base-path /home/xavier/crab/data/tester \
+	--base-path /home/xavier/crab/data/xavier \
 	--name Xavier \
 	--rpc-cors all
 ```
