@@ -75,8 +75,7 @@ fn main() {
 
 			// TODO
 			match status.replace(INIT) {
-				IDLED => (),
-				DB_LOCKED => thread::sleep(Duration::from_secs(3)),
+				DB_LOCKED | IDLED => thread::sleep(Duration::from_secs(3)),
 				_ => (),
 			}
 		}
