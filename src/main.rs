@@ -60,17 +60,11 @@ fn main() {
 	}
 
 	if let Some(script_path) = matches.value_of("script") {
-		let running = Arc::new(AtomicBool::new(true));
-		{
-			let r = running.clone();
-			ctrlc::set_handler(move || {
-				r.store(false, Ordering::SeqCst);
-			})
-			.unwrap();
-		}
 		let status = RefCell::new(INIT);
 
-		while running.load(Ordering::SeqCst) {
+		let term = Arc::new(AtomicBool::new(false));
+		signal_hook::flag::register(signal_hook::SIGTERM, Arc::clone(&term)).unwrap();
+		while !term.load(Ordering::Relaxed) {
 			run(script_path, status.clone());
 
 			// TODO
@@ -174,6 +168,7 @@ where
 
 fn kill(pid: pid_t) {
 	unsafe {
+		libc::killpg(pid, 9);
 		libc::kill(pid, 9);
 	}
 }
