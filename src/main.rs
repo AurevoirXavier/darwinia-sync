@@ -61,11 +61,12 @@ fn main() {
 
 	if let Some(script_path) = matches.value_of("script") {
 		let status = RefCell::new(INIT);
-
 		let term = Arc::new(AtomicBool::new(false));
 		signal_hook::flag::register(signal_hook::SIGTERM, Arc::clone(&term)).unwrap();
+		let mut darwinia_pid = 0;
+
 		while !term.load(Ordering::Relaxed) {
-			run(script_path, status.clone());
+			darwinia_pid = run(script_path, status.clone());
 
 			// TODO
 			match status.replace(INIT) {
@@ -74,19 +75,20 @@ fn main() {
 			}
 		}
 
+		kill_darwinia(darwinia_pid);
 		kill(*global::darwinia_sync_pid);
 	}
 }
 
-fn run(script_path: &str, status: RefCell<u8>) {
+fn run(script_path: &str, status: RefCell<u8>) -> pid_t {
 	let (tx, rx) = mpsc::channel();
 	let mut darwinia = Command::new(script_path)
 		.stdout(Stdio::null())
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
+	let darwinia_pid = darwinia.id() as _;
 	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
-	let darwinia_pid = darwinia.id() as pid_t;
 	let darwinia_thread = thread::spawn(move || {
 		let (mut best_number, mut idle_times) = (0, 0);
 		for log in stderr.lines() {
@@ -133,14 +135,15 @@ fn run(script_path: &str, status: RefCell<u8>) {
 			DB_LOCKED | IDLED => {
 				darwinia_thread.join().unwrap();
 				darwinia.kill().unwrap();
-				kill(darwinia_pid);
-				kill(darwinia_pid + PID_OFFSET);
+				kill_darwinia(darwinia_pid);
 
 				break;
 			}
 			_ => (),
 		}
 	}
+
+	darwinia_pid
 }
 
 fn db_locked(log: &str) -> bool {
@@ -164,6 +167,11 @@ where
 
 		logger(*previous_best_number, *idle_times);
 	}
+}
+
+fn kill_darwinia(darwinia_pid: pid_t) {
+	kill(darwinia_pid);
+	kill(darwinia_pid + PID_OFFSET);
 }
 
 fn kill(pid: pid_t) {
