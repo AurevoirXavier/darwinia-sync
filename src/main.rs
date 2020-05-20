@@ -38,6 +38,7 @@ const PID_OFFSET: pid_t = 1;
 const PID_OFFSET: pid_t = 2;
 
 const INIT: u8 = 0;
+const CRASHED: u8 = 1;
 const DB_LOCKED: u8 = 254;
 const IDLED: u8 = 255;
 
@@ -63,24 +64,29 @@ fn main() {
 		let status = RefCell::new(INIT);
 		let term = Arc::new(AtomicBool::new(false));
 		signal_hook::flag::register(signal_hook::SIGTERM, Arc::clone(&term)).unwrap();
-		let mut darwinia_pid = 0;
 
 		while !term.load(Ordering::Relaxed) {
-			darwinia_pid = run(script_path, status.clone());
+			run(script_path, status.clone());
 
-			// TODO
 			match status.replace(INIT) {
-				DB_LOCKED | IDLED => thread::sleep(Duration::from_secs(3)),
-				_ => (),
+				DB_LOCKED => {
+					sleep("DB Locked", 5);
+				}
+				IDLED => {
+					sleep("Idled", 3);
+				}
+				CRASHED => {
+					sleep("Crashed", 5);
+				}
+				_ => break,
 			}
 		}
 
-		kill_darwinia(darwinia_pid);
 		kill(*global::darwinia_sync_pid);
 	}
 }
 
-fn run(script_path: &str, status: RefCell<u8>) -> pid_t {
+fn run(script_path: &str, status: RefCell<u8>) {
 	let (tx, rx) = mpsc::channel();
 	let mut darwinia = Command::new(script_path)
 		.stdout(Stdio::null())
@@ -120,19 +126,22 @@ fn run(script_path: &str, status: RefCell<u8>) -> pid_t {
 
 			if idle_times > 3 {
 				tx.send(IDLED).unwrap();
-				break;
+				return;
 			} else if db_locked(log) {
 				tx.send(DB_LOCKED).unwrap();
+				return;
 			} else {
 				println!("{}", log);
 			}
 		}
+
+		tx.send(CRASHED).unwrap();
 	});
 
 	while let Ok(received) = rx.recv() {
 		*status.borrow_mut() = received;
 		match received {
-			DB_LOCKED | IDLED => {
+			CRASHED | DB_LOCKED | IDLED => {
 				darwinia_thread.join().unwrap();
 				darwinia.kill().unwrap();
 				kill_darwinia(darwinia_pid);
@@ -142,8 +151,6 @@ fn run(script_path: &str, status: RefCell<u8>) -> pid_t {
 			_ => (),
 		}
 	}
-
-	darwinia_pid
 }
 
 fn db_locked(log: &str) -> bool {
@@ -178,5 +185,13 @@ fn kill(pid: pid_t) {
 	unsafe {
 		libc::killpg(pid, 9);
 		libc::kill(pid, 9);
+	}
+}
+
+fn sleep(log: &str, secs: u64) {
+	log::trace!("{}", format!("{}, Restarting in {}", log, secs));
+	for i in (0..secs).rev() {
+		log::trace!("{}", format!("{}, Restarting in {}", log, i));
+		thread::sleep(Duration::from_secs(1));
 	}
 }
