@@ -136,6 +136,7 @@ fn run(script_path: &str) -> Status {
 			kill(darwinia_pid + PID_OFFSET);
 			kill(darwinia_pid);
 			let _ = darwinia.kill();
+			let _ = darwinia.wait();
 		}
 		_ => (),
 	}
