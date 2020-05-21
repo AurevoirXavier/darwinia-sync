@@ -18,10 +18,6 @@ use std::{
 	env,
 	io::{BufRead, BufReader},
 	process::{self, Command, Stdio},
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc,
-	},
 	time::Duration,
 };
 // --- crates ---
@@ -63,10 +59,7 @@ fn main() {
 	}
 
 	if let Some(script_path) = matches.value_of("script") {
-		let term = Arc::new(AtomicBool::new(false));
-		signal_hook::flag::register(signal_hook::SIGTERM, Arc::clone(&term)).unwrap();
-
-		while !term.load(Ordering::Relaxed) {
+		loop {
 			match run(&script_path) {
 				CRASHED => {
 					sleep("Crashed", 5);
