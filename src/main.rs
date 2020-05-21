@@ -15,7 +15,6 @@ mod global {
 
 // --- std ---
 use std::{
-	cell::RefCell,
 	env,
 	io::{BufRead, BufReader},
 	process::{self, Command, Stdio},
@@ -32,15 +31,19 @@ use libc::pid_t;
 #[cfg(target_os = "linux")]
 use procfs::process::Process;
 
+type Status = u8;
+
 #[cfg(target_os = "macos")]
 const PID_OFFSET: pid_t = 1;
 #[cfg(target_os = "linux")]
 const PID_OFFSET: pid_t = 2;
 
-const INIT: u8 = 0;
-const CRASHED: u8 = 1;
-const DB_LOCKED: u8 = 254;
-const IDLED: u8 = 255;
+const UNKNOWN: Status = 0;
+const CRASHED: Status = 1;
+const DB_LOCKED: Status = 254;
+const IDLED: Status = 255;
+
+const IDLED_LIMIT: u8 = 3;
 
 fn main() {
 	let matches = app_from_crate!()
@@ -61,39 +64,34 @@ fn main() {
 	}
 
 	if let Some(script_path) = matches.value_of("script") {
-		let status = RefCell::new(INIT);
 		let term = Arc::new(AtomicBool::new(false));
 		signal_hook::flag::register(signal_hook::SIGTERM, Arc::clone(&term)).unwrap();
 
 		while !term.load(Ordering::Relaxed) {
-			run(script_path, status.clone());
-
-			match status.replace(INIT) {
+			match run(&script_path) {
+				CRASHED => {
+					sleep("Crashed", 5);
+				}
 				DB_LOCKED => {
 					sleep("DB Locked", 5);
 				}
 				IDLED => {
 					sleep("Idled", 3);
 				}
-				CRASHED => {
-					sleep("Crashed", 5);
-				}
 				_ => break,
 			}
 		}
-
-		kill(*global::darwinia_sync_pid);
 	}
 }
 
-fn run(script_path: &str, status: RefCell<u8>) {
+fn run(script_path: &str) -> Status {
 	let (tx, rx) = mpsc::channel();
 	let mut darwinia = Command::new(script_path)
 		.stdout(Stdio::null())
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
-	let darwinia_pid = darwinia.id() as _;
+	let darwinia_pid = darwinia.id() as pid_t;
 	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
 	let darwinia_thread = thread::spawn(move || {
 		let (mut best_number, mut idle_times) = (0, 0);
@@ -124,7 +122,7 @@ fn run(script_path: &str, status: RefCell<u8>) {
 				},
 			);
 
-			if idle_times > 3 {
+			if idle_times > IDLED_LIMIT {
 				tx.send(IDLED).unwrap();
 				return;
 			} else if db_locked(log) {
@@ -139,18 +137,19 @@ fn run(script_path: &str, status: RefCell<u8>) {
 	});
 
 	while let Ok(received) = rx.recv() {
-		*status.borrow_mut() = received;
 		match received {
 			CRASHED | DB_LOCKED | IDLED => {
 				darwinia_thread.join().unwrap();
 				darwinia.kill().unwrap();
-				kill_darwinia(darwinia_pid);
+				kill(darwinia_pid + PID_OFFSET);
 
-				break;
+				return received;
 			}
 			_ => (),
 		}
 	}
+
+	UNKNOWN
 }
 
 fn db_locked(log: &str) -> bool {
@@ -174,11 +173,6 @@ where
 
 		logger(*previous_best_number, *idle_times);
 	}
-}
-
-fn kill_darwinia(darwinia_pid: pid_t) {
-	kill(darwinia_pid);
-	kill(darwinia_pid + PID_OFFSET);
 }
 
 fn kill(pid: pid_t) {
