@@ -20,9 +20,8 @@ use std::{
 	process::{self, Command, Stdio},
 	sync::{
 		atomic::{AtomicBool, Ordering},
-		mpsc, Arc,
+		Arc,
 	},
-	thread,
 	time::Duration,
 };
 // --- crates ---
@@ -85,7 +84,6 @@ fn main() {
 }
 
 fn run(script_path: &str) -> Status {
-	let (tx, rx) = mpsc::channel();
 	let mut darwinia = Command::new(script_path)
 		.stdout(Stdio::null())
 		.stderr(Stdio::piped())
@@ -93,63 +91,56 @@ fn run(script_path: &str) -> Status {
 		.unwrap();
 	let darwinia_pid = darwinia.id() as pid_t;
 	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
-	let darwinia_thread = thread::spawn(move || {
-		let (mut best_number, mut idle_times) = (0, 0);
-		for log in stderr.lines() {
-			let log = &log.unwrap();
+	let mut status = UNKNOWN;
+	let (mut best_number, mut idle_times) = (0, 0);
 
-			sync_stalled(
-				log,
-				&mut best_number,
-				&mut idle_times,
-				|best_number, idle_times| {
-					#[cfg(target_os = "linux")]
-					if let Ok(darwinia_sync_process) = Process::myself() {
-						log::trace!("Darwinia-Sync vsize: {}", darwinia_sync_process.stat.vsize,);
-					}
-					#[cfg(target_os = "linux")]
-					if let Ok(darwinia_process) = Process::new(darwinia_pid) {
-						log::trace!("Darwinia vsize: {}", darwinia_process.stat.vsize,);
-					}
+	for log in stderr.lines() {
+		let log = &log.unwrap();
+		sync_stalled(
+			log,
+			&mut best_number,
+			&mut idle_times,
+			|best_number, idle_times| {
+				#[cfg(target_os = "linux")]
+				if let Ok(darwinia_sync_process) = Process::myself() {
+					log::trace!("Darwinia-Sync vsize: {}", darwinia_sync_process.stat.vsize,);
+				}
+				#[cfg(target_os = "linux")]
+				if let Ok(darwinia_process) = Process::new(darwinia_pid) {
+					log::trace!("Darwinia vsize: {}", darwinia_process.stat.vsize,);
+				}
 
-					log::trace!(
-						"Darwinia-Sync PID: {}, Darwinia-Sync TID: {}, Darwinia PID: {}",
-						*global::darwinia_sync_pid,
-						darwinia_pid,
-						darwinia_pid + PID_OFFSET,
-					);
-					log::trace!("Best Number: {}, Idle Times: {}", best_number, idle_times);
-				},
-			);
+				log::trace!(
+					"Darwinia-Sync PID: {}, Darwinia-Sync TID: {}, Darwinia PID: {}",
+					*global::darwinia_sync_pid,
+					darwinia_pid,
+					darwinia_pid + PID_OFFSET,
+				);
+				log::trace!("Best Number: {}, Idle Times: {}", best_number, idle_times);
+			},
+		);
 
-			if idle_times > IDLED_LIMIT {
-				tx.send(IDLED).unwrap();
-				return;
-			} else if db_locked(log) {
-				tx.send(DB_LOCKED).unwrap();
-				return;
-			} else {
-				println!("{}", log);
-			}
-		}
-
-		tx.send(CRASHED).unwrap();
-	});
-
-	while let Ok(received) = rx.recv() {
-		match received {
-			CRASHED | DB_LOCKED | IDLED => {
-				darwinia_thread.join().unwrap();
-				darwinia.kill().unwrap();
-				kill(darwinia_pid + PID_OFFSET);
-
-				return received;
-			}
-			_ => (),
+		if idle_times > IDLED_LIMIT {
+			status = IDLED;
+			break;
+		} else if db_locked(log) {
+			status = DB_LOCKED;
+			break;
+		} else {
+			println!("{}", log);
 		}
 	}
 
-	UNKNOWN
+	match status {
+		CRASHED | DB_LOCKED | IDLED => {
+			kill(darwinia_pid + PID_OFFSET);
+			kill(darwinia_pid);
+			let _ = darwinia.kill();
+		}
+		_ => (),
+	}
+
+	status
 }
 
 fn db_locked(log: &str) -> bool {
@@ -177,14 +168,14 @@ where
 
 fn kill(pid: pid_t) {
 	unsafe {
+		libc::killpg(pid, 9);
 		libc::kill(pid, 9);
 	}
 }
 
 fn sleep(log: &str, secs: u64) {
-	log::trace!("{}", format!("{}, Restarting in {}", log, secs));
 	for i in (0..secs).rev() {
 		log::trace!("{}", format!("{}, Restarting in {}", log, i));
-		thread::sleep(Duration::from_secs(1));
+		std::thread::sleep(Duration::from_secs(1));
 	}
 }
