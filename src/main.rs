@@ -25,13 +25,11 @@ use clap::{app_from_crate, Arg};
 use libc::pid_t;
 #[cfg(target_os = "linux")]
 use procfs::process::Process;
+use sysinfo::{ProcessExt, System, SystemExt};
 
 type Status = u8;
 
-#[cfg(target_os = "macos")]
-const PID_OFFSET: pid_t = 1;
-#[cfg(target_os = "linux")]
-const PID_OFFSET: pid_t = 2;
+const PID_OFFSET: pid_t = 10;
 
 const UNKNOWN: Status = 0;
 const CRASHED: Status = 1;
@@ -59,8 +57,8 @@ fn main() {
 	}
 
 	if let Some(script_path) = matches.value_of("script") {
-		loop {
-			match run(&script_path) {
+		for restart_times in 0.. {
+			match run(&script_path, restart_times) {
 				CRASHED => {
 					sleep("Crashed", 5);
 				}
@@ -76,13 +74,13 @@ fn main() {
 	}
 }
 
-fn run(script_path: &str) -> Status {
+fn run(script_path: &str, restart_times: u32) -> Status {
 	let mut darwinia = Command::new(script_path)
 		.stdout(Stdio::null())
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
-	let darwinia_pid = darwinia.id() as pid_t;
+	let darwinia_tid = darwinia.id() as pid_t;
 	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
 	let mut status = UNKNOWN;
 	let (mut best_number, mut idle_times) = (0, 0);
@@ -99,15 +97,15 @@ fn run(script_path: &str) -> Status {
 					log::trace!("Darwinia-Sync vsize: {}", darwinia_sync_process.stat.vsize,);
 				}
 				#[cfg(target_os = "linux")]
-				if let Ok(darwinia_process) = Process::new(darwinia_pid) {
+				if let Ok(darwinia_process) = Process::new(darwinia_tid) {
 					log::trace!("Darwinia vsize: {}", darwinia_process.stat.vsize,);
 				}
 
 				log::trace!(
-					"Darwinia-Sync PID: {}, Darwinia-Sync TID: {}, Darwinia PID: {}",
+					"Darwinia-Sync PID: {}, Darwinia-Sync TID: {}, Restart Times: {}",
 					*global::darwinia_sync_pid,
-					darwinia_pid,
-					darwinia_pid + PID_OFFSET,
+					darwinia_tid,
+					restart_times,
 				);
 				log::trace!("Best Number: {}, Idle Times: {}", best_number, idle_times);
 			},
@@ -126,8 +124,16 @@ fn run(script_path: &str) -> Status {
 
 	match status {
 		CRASHED | DB_LOCKED | IDLED => {
-			kill(darwinia_pid + PID_OFFSET);
-			kill(darwinia_pid);
+			for pid_offset in 1..=PID_OFFSET {
+				let darwinia_pid = darwinia_tid + pid_offset;
+				let s = System::new();
+				if let Some(process) = s.get_process(darwinia_pid) {
+					if process.name().contains("darwinia") {
+						kill(darwinia_pid);
+					}
+				}
+			}
+			kill(darwinia_tid);
 			let _ = darwinia.kill();
 			let _ = darwinia.wait();
 		}
