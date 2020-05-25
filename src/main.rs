@@ -15,6 +15,7 @@ use std::{
 	env,
 	io::{BufRead, BufReader},
 	process::{self, Command, Stdio},
+	thread,
 	time::Duration,
 };
 // --- crates ---
@@ -68,8 +69,6 @@ fn main() {
 }
 
 fn run(script_path: &str, restart_times: u32) -> Status {
-	let sync_pid = process::id() as pid_t;
-
 	let mut system = System::new_with_specifics(
 		RefreshKind::new()
 			.with_processes()
@@ -84,6 +83,7 @@ fn run(script_path: &str, restart_times: u32) -> Status {
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
+	let darwinia_pid = find_darwinia_pid(&mut system);
 
 	let stderr = BufReader::new(sync_thread.stderr.take().unwrap());
 	let mut status = UNKNOWN;
@@ -92,7 +92,7 @@ fn run(script_path: &str, restart_times: u32) -> Status {
 	for log in stderr.lines() {
 		refresh_system(&mut system);
 
-		let sync_thread_detail = system.get_process(sync_pid).unwrap();
+		let sync_thread_detail = system.get_process(darwinia_pid).unwrap();
 		let log = &log.unwrap();
 
 		check_sync(
@@ -103,7 +103,11 @@ fn run(script_path: &str, restart_times: u32) -> Status {
 				let cpu_usage = sync_thread_detail.cpu_usage();
 				let memory_usage = sync_thread_detail.memory();
 				let disk_usage = sync_thread_detail.disk_usage();
-				log::trace!("Sync PID: {}, Restart Times: {}", sync_pid, restart_times);
+				log::trace!(
+					"Darwinia PID: {}, Restart Times: {}",
+					darwinia_pid,
+					restart_times
+				);
 				log::trace!(
 					"Cpu Usage: {}%, Memory Usage: {} KB",
 					cpu_usage,
@@ -173,7 +177,7 @@ where
 fn sleep(log: &str, secs: u64) {
 	for i in (1..=secs).rev() {
 		log::trace!("{}", format!("{}, Restarting in {}", log, i));
-		std::thread::sleep(Duration::from_secs(1));
+		thread::sleep(Duration::from_secs(1));
 	}
 }
 
@@ -182,6 +186,30 @@ fn refresh_system(system: &mut System) {
 	system.refresh_system();
 	system.refresh_disks();
 	system.refresh_networks();
+}
+
+fn find_darwinia_pid(system: &mut System) -> pid_t {
+	for _ in 0u8..IDLED_LIMIT {
+		refresh_system(system);
+
+		let sync_pid = process::id() as pid_t;
+		let gid = unsafe { libc::getpgrp() };
+
+		for (&pid, process) in system.get_processes() {
+			if pid > sync_pid
+				&& unsafe { libc::getpgid(pid) } == gid
+				&& process.name() != "darwinia-sync"
+				&& process.name().contains("darwinia")
+			{
+				return process.pid();
+			}
+		}
+
+		thread::sleep(Duration::from_secs(1));
+	}
+
+	killpg_except_root(system);
+	panic!("Process NOT FOUND, Make Sure the Executable's Name Contains `darwinia`");
 }
 
 fn killpg_except_root(system: &mut System) {
