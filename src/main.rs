@@ -4,11 +4,8 @@ mod global {
 	// --- crates ---
 	use lazy_static::lazy_static;
 	use regex::Regex;
-	// --- custom ---
-	use crate::*;
 
 	lazy_static! {
-		pub static ref darwinia_sync_pid: pid_t = process::id() as _;
 		pub static ref best_number_regex: Regex = Regex::new(r".+?best.+?#(\d+)").unwrap();
 	}
 }
@@ -17,26 +14,22 @@ mod global {
 use std::{
 	env,
 	io::{BufRead, BufReader},
-	process::{self, Command, Stdio},
+	process::{Command, Stdio},
 	time::Duration,
 };
 // --- crates ---
 use clap::{app_from_crate, Arg};
 use libc::pid_t;
-#[cfg(target_os = "linux")]
-use procfs::process::Process;
-use sysinfo::{ProcessExt, System, SystemExt};
+use sysinfo::{ProcessExt, RefreshKind, Signal, System, SystemExt};
 
 type Status = u8;
-
-const PID_OFFSET: pid_t = 10;
 
 const UNKNOWN: Status = 0;
 const CRASHED: Status = 1;
 const DB_LOCKED: Status = 254;
 const IDLED: Status = 255;
 
-const IDLED_LIMIT: u8 = 3;
+const IDLED_LIMIT: u8 = 1;
 
 fn main() {
 	let matches = app_from_crate!()
@@ -75,13 +68,13 @@ fn main() {
 }
 
 fn run(script_path: &str, restart_times: u32) -> Status {
-	let mut darwinia = Command::new(script_path)
+	let mut sync_thread = Command::new(script_path)
 		.stdout(Stdio::null())
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
-	let darwinia_tid = darwinia.id() as pid_t;
-	let stderr = BufReader::new(darwinia.stderr.take().unwrap());
+	let sync_thread_pid = sync_thread.id() as pid_t;
+	let stderr = BufReader::new(sync_thread.stderr.take().unwrap());
 	let mut status = UNKNOWN;
 	let (mut best_number, mut idle_times) = (0, 0);
 
@@ -92,19 +85,9 @@ fn run(script_path: &str, restart_times: u32) -> Status {
 			&mut best_number,
 			&mut idle_times,
 			|best_number, idle_times| {
-				#[cfg(target_os = "linux")]
-				if let Ok(darwinia_sync_process) = Process::myself() {
-					log::trace!("Darwinia-Sync vsize: {}", darwinia_sync_process.stat.vsize,);
-				}
-				#[cfg(target_os = "linux")]
-				if let Ok(darwinia_process) = Process::new(darwinia_tid) {
-					log::trace!("Darwinia vsize: {}", darwinia_process.stat.vsize,);
-				}
-
 				log::trace!(
-					"Darwinia-Sync PID: {}, Darwinia-Sync TID: {}, Restart Times: {}",
-					*global::darwinia_sync_pid,
-					darwinia_tid,
+					"Sync Thread PID: {}, Restart Times: {}",
+					sync_thread_pid,
 					restart_times,
 				);
 				log::trace!("Best Number: {}, Idle Times: {}", best_number, idle_times);
@@ -124,18 +107,9 @@ fn run(script_path: &str, restart_times: u32) -> Status {
 
 	match status {
 		CRASHED | DB_LOCKED | IDLED => {
-			for pid_offset in 1..=PID_OFFSET {
-				let darwinia_pid = darwinia_tid + pid_offset;
-				let s = System::new();
-				if let Some(process) = s.get_process(darwinia_pid) {
-					if process.name().contains("darwinia") {
-						kill(darwinia_pid);
-					}
-				}
-			}
-			kill(darwinia_tid);
-			let _ = darwinia.kill();
-			let _ = darwinia.wait();
+			kill_sync_thread(sync_thread_pid);
+			let _ = sync_thread.kill();
+			let _ = sync_thread.wait();
 		}
 		_ => (),
 	}
@@ -166,16 +140,24 @@ where
 	}
 }
 
-fn kill(pid: pid_t) {
-	unsafe {
-		libc::killpg(pid, 9);
-		libc::kill(pid, 9);
+fn sleep(log: &str, secs: u64) {
+	for i in (1..=secs).rev() {
+		log::trace!("{}", format!("{}, Restarting in {}", log, i));
+		std::thread::sleep(Duration::from_secs(1));
 	}
 }
 
-fn sleep(log: &str, secs: u64) {
-	for i in (0..secs).rev() {
-		log::trace!("{}", format!("{}, Restarting in {}", log, i));
-		std::thread::sleep(Duration::from_secs(1));
+fn kill_sync_thread(sync_thread_pid: pid_t) {
+	let gid = unsafe { libc::getpgrp() };
+	for (&pid, process) in
+		System::new_with_specifics(RefreshKind::new().with_processes()).get_processes()
+	{
+		if pid < sync_thread_pid {
+			continue;
+		}
+
+		if unsafe { libc::getpgid(pid) } == gid {
+			process.kill(Signal::Kill);
+		}
 	}
 }
