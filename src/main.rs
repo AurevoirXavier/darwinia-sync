@@ -29,7 +29,7 @@ const CRASHED: Status = 1;
 const DB_LOCKED: Status = 254;
 const IDLED: Status = 255;
 
-const IDLED_LIMIT: u8 = 1;
+const IDLED_LIMIT: u8 = 5;
 
 fn main() {
 	let matches = app_from_crate!()
