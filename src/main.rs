@@ -14,7 +14,7 @@ mod global {
 use std::{
 	env,
 	io::{BufRead, BufReader},
-	process::{Command, Stdio},
+	process::{self, Command, Stdio},
 	time::Duration,
 };
 // --- crates ---
@@ -68,27 +68,57 @@ fn main() {
 }
 
 fn run(script_path: &str, restart_times: u32) -> Status {
+	let sync_pid = process::id() as pid_t;
+
+	let mut system = System::new_with_specifics(
+		RefreshKind::new()
+			.with_processes()
+			.with_cpu()
+			.with_memory()
+			.with_disks()
+			.with_networks(),
+	);
+
 	let mut sync_thread = Command::new(script_path)
 		.stdout(Stdio::null())
 		.stderr(Stdio::piped())
 		.spawn()
 		.unwrap();
-	let sync_thread_pid = sync_thread.id() as pid_t;
+
 	let stderr = BufReader::new(sync_thread.stderr.take().unwrap());
 	let mut status = UNKNOWN;
 	let (mut best_number, mut idle_times) = (0, 0);
 
 	for log in stderr.lines() {
+		refresh_system(&mut system);
+
+		let sync_thread_detail = system.get_process(sync_pid).unwrap();
 		let log = &log.unwrap();
-		sync_stalled(
+
+		check_sync(
 			log,
 			&mut best_number,
 			&mut idle_times,
 			|best_number, idle_times| {
+				let cpu_usage = sync_thread_detail.cpu_usage();
+				let memory_usage = sync_thread_detail.memory();
+				let disk_usage = sync_thread_detail.disk_usage();
+				log::trace!("Sync PID: {}, Restart Times: {}", sync_pid, restart_times);
 				log::trace!(
-					"Sync Thread PID: {}, Restart Times: {}",
-					sync_thread_pid,
-					restart_times,
+					"Cpu Usage: {}%, Memory Usage: {} KB",
+					cpu_usage,
+					memory_usage,
+				);
+				log::trace!("Disk Usage:");
+				log::trace!(
+					"\t[read bytes   : new/total => {}/{}]",
+					disk_usage.read_bytes,
+					disk_usage.total_read_bytes,
+				);
+				log::trace!(
+					"\t[written bytes: new/total => {}/{}]",
+					disk_usage.written_bytes,
+					disk_usage.total_written_bytes,
 				);
 				log::trace!("Best Number: {}, Idle Times: {}", best_number, idle_times);
 			},
@@ -107,7 +137,7 @@ fn run(script_path: &str, restart_times: u32) -> Status {
 
 	match status {
 		CRASHED | DB_LOCKED | IDLED => {
-			kill_sync_thread(sync_thread_pid);
+			killpg_except_root(&mut system);
 			let _ = sync_thread.kill();
 			let _ = sync_thread.wait();
 		}
@@ -121,7 +151,7 @@ fn db_locked(log: &str) -> bool {
 	log.contains("db/LOCK")
 }
 
-fn sync_stalled<F>(log: &str, previous_best_number: &mut u32, idle_times: &mut u8, logger: F)
+fn check_sync<F>(log: &str, previous_best_number: &mut u32, idle_times: &mut u8, logger: F)
 where
 	F: FnOnce(u32, u8),
 {
@@ -147,16 +177,21 @@ fn sleep(log: &str, secs: u64) {
 	}
 }
 
-fn kill_sync_thread(sync_thread_pid: pid_t) {
-	let gid = unsafe { libc::getpgrp() };
-	for (&pid, process) in
-		System::new_with_specifics(RefreshKind::new().with_processes()).get_processes()
-	{
-		if pid < sync_thread_pid {
-			continue;
-		}
+fn refresh_system(system: &mut System) {
+	system.refresh_processes();
+	system.refresh_system();
+	system.refresh_disks();
+	system.refresh_networks();
+}
 
-		if unsafe { libc::getpgid(pid) } == gid {
+fn killpg_except_root(system: &mut System) {
+	refresh_system(system);
+
+	let sync_pid = process::id() as pid_t;
+	let gid = unsafe { libc::getpgrp() };
+
+	for (&pid, process) in system.get_processes() {
+		if pid > sync_pid && unsafe { libc::getpgid(pid) } == gid {
 			process.kill(Signal::Kill);
 		}
 	}
